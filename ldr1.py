@@ -2,19 +2,10 @@ import pymongo
 from pymongo import MongoClient
 import datetime
 
-
+import argparse
+import sys
 import csv
 
-client = MongoClient("mongodb://localhost:37017");
-
-db = client['hurricane']
-
-coll = db['tracks']
-
-fname = 'hurdat2-1851-2017-050118.txt'
-#fname = 'qq';
-
-n = 0
 
 def readHeader(reader):
     desc = None
@@ -46,7 +37,6 @@ def readHeader(reader):
 def llFromDistance(latitude, longitude, distance, bearing):
     # taken from: https://stackoverflow.com/a/46410871/13549 
     # distance in KM, bearing in degrees
-
     p = 0.017453292519943295     #Pi/180
     R = 6378.1  # // Radius of the Earth in KM
 
@@ -132,9 +122,6 @@ def createPoly(center, quaddata):
     return pts
 
 
-
-
-
 def adjQuad(rr):
     something = False
 
@@ -204,13 +191,11 @@ def convertQuadData(center, r34, r50, r64):
         r64_ring = createPoly(center, r64)
         r50_ring = createPoly(center, r50)
         r34_ring = createPoly(center, r34)
-
         gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r64_ring], [r50_ring,r64_ring], [r34_ring,r50_ring] ] })
 
         gdesc.append("64knot winds")
         gdesc.append("50knot winds")
         gdesc.append("34knot winds")
-
 
     else:
         if 50 == result:
@@ -283,10 +268,6 @@ def readData(reader):
 
     data['windRings'] = gwrap;
 
-#    data['R34'] = {"NE": int(prow[8]), "SE": int(prow[9]), "SW": int(prow[10]), "NW": int(prow[11]) }
-#    data['R50'] = {"NE": int(prow[12]), "SE": int(prow[13]), "SW": int(prow[14]), "NW": int(prow[15]) }
-#    data['R64'] = {"NE": int(prow[16]), "SE": int(prow[17]), "SW": int(prow[18]), "NW": int(prow[19]) }
-
     return data
 
 
@@ -294,9 +275,9 @@ def readData(reader):
 from math import cos, sin, asin, atan2, sqrt, degrees, radians
 
 def distance(lat1, lon1, lat2, lon2):
-    p = 0.017453292519943295     #Pi/180
+    p = 0.017453292519943295     # Pi/180
     a = 0.5 - cos((lat2 - lat1) * p)/2 + cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2
-    return 12742 * asin(sqrt(a)) #2*Radiusofearth*asin...
+    return 12742 * asin(sqrt(a)) # 2 * Radiusofearth * asin...
 
 
 def bearing(endlat, endlon, startlat, startlon):
@@ -320,64 +301,115 @@ def bearing(endlat, endlon, startlat, startlon):
     return compass_bearing
 
 
+def go(rargs):
+    client = MongoClient(host=rargs.host)
 
-with open(fname, 'r') as csvfile:
-    reader = csv.reader(csvfile)
+    db = client[rargs.db]
 
-    tot = 0
+    coll = db[rargs.collection]
 
-    coll.drop()
+    fname = rargs.fname
 
-    while True:
-        info = readHeader(reader)
-        if info is None:
-            break
+    n = 0
 
-        maxn = info['count']
+    with open(fname, 'r') as csvfile:
+        reader = csv.reader(csvfile)
 
-        items = []
-        for n in range(0, maxn):
-            items.append(readData(reader))
+        tot = 0
 
-        for n in range(0, maxn):
-            a = items[n]
-            if(n < maxn - 1):
-                b = items[n+1]
+        if rargs.drop == True:
+            coll.drop()
 
-                tdelta = b['ts'] - a['ts']
+        while True:
+            info = readHeader(reader)
+            if info is None:
+                break
 
-                # Distance between two doesn't matter....
-                dist = distance(a['center']['coordinates'][1], a['center']['coordinates'][0], 
-                                b['center']['coordinates'][1], b['center']['coordinates'][0])
+            maxn = info['count']
 
-                # ... but for bearing, it does!  Otherwise you're going backwards.
-                cbear = bearing(b['center']['coordinates'][1], b['center']['coordinates'][0], 
-                                a['center']['coordinates'][1], a['center']['coordinates'][0])
+            items = []
+            for n in range(0, maxn):
+                items.append(readData(reader))
 
-                b['bearing'] = int(round(cbear))
+            for n in range(0, maxn):
+                a = items[n]
+                if(n < maxn - 1):
+                    b = items[n+1]
 
-                if tdelta.seconds != 0:
-                    b['avgSpeed'] = int(round(dist / (tdelta.seconds / 3600.0)))
+                    tdelta = b['ts'] - a['ts']
 
+                    # Distance between two doesn't matter....
+                    dist = distance(a['center']['coordinates'][1], a['center']['coordinates'][0], 
+                                    b['center']['coordinates'][1], b['center']['coordinates'][0])
 
-        for n in range(0, maxn):
-            items[n]['basin'] = info['basin']
-            items[n]['nth'] = info['nth']
-            items[n]['name'] = info['name']
+                    # ... but for bearing, it does!  Otherwise you're going backwards.
+                    cbear = bearing(b['center']['coordinates'][1], b['center']['coordinates'][0], 
+                                    a['center']['coordinates'][1], a['center']['coordinates'][0])
 
-            coll.insert(items[n])
+                    b['bearing'] = int(round(cbear))
 
-
-        tot += 1
-        if 0 == tot % 100:
-            print tot
+                    if tdelta.seconds != 0:
+                        b['avgSpeed'] = int(round(dist / (tdelta.seconds / 3600.0)))
 
 
-    print "total events loaded:", tot
+            for n in range(0, maxn):
+                items[n]['basin'] = info['basin']
+                items[n]['nth'] = info['nth']
+                items[n]['name'] = info['name']
+                
+                coll.insert(items[n])
+            
 
-    print "creating 2dsphere index on center..."
-    coll.create_index([("center","2dsphere")])
+            tot += 1
+            if 0 == tot % 100:
+                print tot
 
-    print "creating 2dsphere index on windRings..."
-    coll.create_index([("windRings","2dsphere")])
+
+        print "total events loaded:", tot
+
+        print "creating 2dsphere index on center..."
+        coll.create_index([("center","2dsphere")])
+
+        print "creating 2dsphere index on windRings..."
+        coll.create_index([("windRings","2dsphere")])
+
+
+
+def main(args):
+    parser = argparse.ArgumentParser(description=
+   """A quick util to load HURDAT2 data into MongoDB
+   """,
+         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+   )
+    parser.add_argument('fname', metavar='fileName',
+                   help='file to load')
+
+    parser.add_argument('--host',
+                        metavar='mongoDBhost',
+                        default="mongodb://localhost:27017",
+                        help='connection string to server')
+
+    parser.add_argument('--db',
+                        metavar='db',
+                        default="hurricane",
+                        help='database to use')
+
+    parser.add_argument('--collection', 
+                        metavar='collectionName',
+                        default="tracks",
+                        help='name of collection to insert data')
+
+    parser.add_argument('--drop', 
+                   action='store_true',
+                   help='drop target collection before loading')
+
+    rargs = parser.parse_args()
+
+    go(rargs)
+
+
+
+
+if __name__ == "__main__":
+    main(sys.argv)
 
