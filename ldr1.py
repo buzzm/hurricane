@@ -34,7 +34,7 @@ def readHeader(reader):
     return desc
 
 
-def llFromDistance(latitude, longitude, distance, bearing):
+def llFromDistance(latitude, longitude, distance, bearing, precision):
     # taken from: https://stackoverflow.com/a/46410871/13549 
     # distance in KM, bearing in degrees
     p = 0.017453292519943295     #Pi/180
@@ -48,9 +48,9 @@ def llFromDistance(latitude, longitude, distance, bearing):
     lat = asin(sin(lat) * cos(distance / R) + cos(lat) * sin(distance / R) * cos(brng));
     lon = lon + (atan2(sin(brng) * sin(distance / R) * cos(lat), cos(distance / R) - sin(lat) * sin(lat)))
 
-    #  Coords back to degrees and return
-    #return [lat * (1/p), lon * (1/p)]
-    return [lon * (1/p), lat * (1/p)]
+    #  Coords back to degrees, round, and return as lon,lat for MongoDB!
+
+    return [round(lon * (1/p),precision), round(lat * (1/p),precision)]
 
 
 
@@ -84,7 +84,15 @@ def createPoly(center, quaddata):
     # i.e. NE and SW will be the given values and the compass directions will be
     # the AVERAGE of the 2 neighboringe extents!
 
-    fudgeK = 2.0;
+    fudgeK = 2.0
+
+
+    #  # of decimal places to round lat,lon.  Hurricane sized events with 9
+    #  digits of accuracy is silly.
+    #  2 digits is good to 1km.  3 is 100m.  To help with aligning landfall
+    #  and specific targets, we'll go to 3.
+    precision = 3
+
 
     pts = []
 
@@ -96,28 +104,26 @@ def createPoly(center, quaddata):
     x = center['coordinates'][1]
     y = center['coordinates'][0]
 
-    pts.append(llFromDistance(x, y, nStart, 0))  # kickoff...
+    startPt = llFromDistance(x, y, nStart, 0, precision)    # staring point
+
+    pts.append(startPt)                                      # pt 1 
 
     d = quaddata['NE'] if quaddata['NE'] > 0 else (nStart+eStart)/fudgeK;
-    mpt = llFromDistance(x, y, d, 45)
-    pts.append(mpt)
-    pts.append(llFromDistance(x, y, eStart, 90))
+    pts.append(llFromDistance(x, y, d,      45, precision))  # pt 2
+    pts.append(llFromDistance(x, y, eStart, 90, precision))  # pt 3
 
     d = quaddata['SE'] if quaddata['SE'] > 0 else (eStart+sStart)/fudgeK;
-    mpt = llFromDistance(x, y, d, 135)
-    pts.append(mpt)
-    pts.append(llFromDistance(x, y, sStart, 180))
+    pts.append(llFromDistance(x, y, d,      135, precision)) # pt 3 
+    pts.append(llFromDistance(x, y, sStart, 180, precision)) # pt 5
 
     d = quaddata['SW'] if quaddata['SW'] > 0 else (sStart+wStart)/fudgeK;
-    mpt = llFromDistance(x, y, d, 225)
-    pts.append(mpt)
-    pts.append(llFromDistance(x, y, wStart, 270))
+    pts.append(llFromDistance(x, y, d,      225, precision)) # pt 6
+    pts.append(llFromDistance(x, y, wStart, 270, precision)) # pt 7
 
     d = quaddata['NW'] if quaddata['NW'] > 0 else (wStart+nStart)/fudgeK;
-    mpt = llFromDistance(x, y, d, 315);
-    pts.append(mpt)
+    pts.append(llFromDistance(x, y, d,      315, precision)) # pt 8
 
-    pts.append( llFromDistance(x, y, nStart, 0))  # close loop!
+    pts.append(startPt)                                      # close loop!
 
     return pts
 
@@ -146,10 +152,13 @@ def adjQuad(rr):
     return something
 
 
+
 def expandParent(parent, hole):
+
+    puffer = .1
     for q in ['NE','SE','SW','NW']:
-        if parent[q] - hole[q] < .5:
-            parent[q] = hole[q] + .5 # add .5 KM            
+        if parent[q] - hole[q] < puffer:
+            parent[q] = hole[q] + puffer
 
 def groomQuads(r34, r50, r64):
     result = 0
@@ -191,7 +200,8 @@ def convertQuadData(center, r34, r50, r64):
         r64_ring = createPoly(center, r64)
         r50_ring = createPoly(center, r50)
         r34_ring = createPoly(center, r34)
-        gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r64_ring], [r50_ring,r64_ring], [r34_ring,r50_ring] ] })
+
+        gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r34_ring,r50_ring], [r50_ring,r64_ring], [r64_ring]  ] })
 
         gdesc.append("64knot winds")
         gdesc.append("50knot winds")
@@ -201,7 +211,10 @@ def convertQuadData(center, r34, r50, r64):
         if 50 == result:
             r50_ring = createPoly(center, r50)
             r34_ring = createPoly(center, r34)
-            gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r50_ring], [r34_ring,r50_ring] ] })
+#            gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r50_ring], [r34_ring,r50_ring] ] })
+#            print "R34", r34_ring
+#            print "R50", r50_ring
+            gcoll.append({ "type":"MultiPolygon", "coordinates": [ [r34_ring,r50_ring], [r50_ring]  ] })
             gdesc.append("50knot winds")
             gdesc.append("34knot winds")
 
@@ -280,17 +293,18 @@ def distance(lat1, lon1, lat2, lon2):
     return 12742 * asin(sqrt(a)) # 2 * Radiusofearth * asin...
 
 
-def bearing(endlat, endlon, startlat, startlon):
-    endlat = radians(endlat)
+def bearing(startlat, startlon, endlat, endlon ):
     startlat = radians(startlat)
+    endlat = radians(endlat)
 
     diffLong = radians(endlon - startlon)
 
-    x = sin(diffLong) * cos(startlat)
-    y = cos(endlat) * sin(startlat) - (sin(endlat)
-            * cos(startlat) * cos(diffLong))
+    x = sin(diffLong) * cos(endlat)
+    y = cos(startlat) * sin(endlat) - (sin(startlat)
+            * cos(endlat) * cos(diffLong))
 
     initial_bearing = atan2(x, y)
+
 
     # Now we have the initial bearing but atan2 return values
     # from -180 to + 180 which is not what we want for a compass bearing
@@ -299,6 +313,7 @@ def bearing(endlat, endlon, startlat, startlon):
     compass_bearing = (initial_bearing + 360) % 360
 
     return compass_bearing
+
 
 
 def go(rargs):
@@ -343,8 +358,9 @@ def go(rargs):
                                     b['center']['coordinates'][1], b['center']['coordinates'][0])
 
                     # ... but for bearing, it does!  Otherwise you're going backwards.
-                    cbear = bearing(b['center']['coordinates'][1], b['center']['coordinates'][0], 
-                                    a['center']['coordinates'][1], a['center']['coordinates'][0])
+                    cbear = bearing(a['center']['coordinates'][1], a['center']['coordinates'][0],
+                                    b['center']['coordinates'][1], b['center']['coordinates'][0]
+                                    )
 
                     b['bearing'] = int(round(cbear))
 
@@ -358,7 +374,7 @@ def go(rargs):
                 items[n]['name'] = info['name']
                 
                 coll.insert(items[n])
-            
+
 
             tot += 1
             if 0 == tot % 100:
