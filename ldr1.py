@@ -248,7 +248,8 @@ def readData(reader):
     ts = prow[0] + prow[1]
     data['ts'] = datetime.datetime.strptime(ts, "%Y%m%d%H%M")
 
-    #  Invent the D code for regular data:
+    # Codes are [ "L", "R", "I", "P", "W", "C", "S", "G", "T" ]
+    # Invent the D code for regular data:
     data['code'] = prow[2] if prow[2] is not '' else 'D'
 
     data['status'] = prow[3];
@@ -362,7 +363,11 @@ def go(rargs):
                                     b['center']['coordinates'][1], b['center']['coordinates'][0]
                                     )
 
-                    b['bearing'] = int(round(cbear))
+                    #  So the bearing from point a to point b is the bearing observed
+                    #  at point A, not B.  If you have a start and end, then you know
+                    #  the direction you took to get to B starting at A.
+                    a['bearing'] = int(round(cbear))
+                    #b['bearing'] = int(round(cbear))
 
                     if tdelta.seconds != 0:
                         b['avgSpeed'] = int(round(dist / (tdelta.seconds / 3600.0)))
