@@ -8,6 +8,20 @@ import sys
 import json
 
 
+codes = {
+"C": "Closest approach to a coast, not followed by a landfall",
+"G": "Genesis",
+"I": "An intensity peak in terms of both pressure and wind",
+"L": "Landfall (center of system crossing a coastline)",
+"P": "Minimum in central pressure",
+"R": "Provides additional detail on the intensity of the cyclone when rapid changes are underway",
+"S": "Change of status of the system",
+"T": "Provides additional detail on the track (position) of the cyclone",
+"W": "Maximum sustained wind speed"
+}
+
+
+
 def process(cursor):
     fwrap = {"type": "FeatureCollection"}
     fcoll = []
@@ -39,7 +53,7 @@ def process(cursor):
         else:
             color = "#5ebaff"
 
-        ff['properties'] = {
+        props = {
             "n": n,
             "ts": d['ts'].strftime("%Y-%m-%d %H:%M:%S"),
             "bearing": bearing,
@@ -51,6 +65,16 @@ def process(cursor):
             }
 
 
+        if d['code'] != 'D':
+            props['code'] = d['code']
+            props['info'] = codes[d['code']]
+
+            props['marker-symbol'] = "circle"
+
+        ff['properties'] = props
+
+
+
         pt = d['center']['coordinates']
 
         ptline.append(pt)
@@ -59,6 +83,18 @@ def process(cursor):
 
         fcoll.append(ff)
 
+        n += 1
+
+#        print d['code'], len(d['windRings']['properties'])
+#         if d['code'] == 'L' and len(d['windRings']['properties']) > 1:
+#             ff2 = {}
+#             ff2['type'] = "Feature"
+#             ff2['properties'] = {}
+#             ff2['geometry'] = d['windRings']['geometries'][1]
+#             fcoll.append(ff2)
+
+            
+        
     ff = {}
     ff['type'] = "Feature"
     ff['properties'] = {}

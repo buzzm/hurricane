@@ -249,6 +249,16 @@ def readData(reader):
     data['ts'] = datetime.datetime.strptime(ts, "%Y%m%d%H%M")
 
     # Codes are [ "L", "R", "I", "P", "W", "C", "S", "G", "T" ]
+    # C – Closest approach to a coast, not followed by a landfall
+    # G – Genesis
+    # I – An intensity peak in terms of both pressure and wind
+    # L – Landfall (center of system crossing a coastline)
+    # P – Minimum in central pressure
+    # R – Provides additional detail on the intensity of the cyclone when rapid changes are underway
+    # S – Change of status of the system
+    # T – Provides additional detail on the track (position) of the cyclone
+    # W – Maximum sustained wind speed
+    #
     # Invent the D code for regular data:
     data['code'] = prow[2] if prow[2] is not '' else 'D'
 
