@@ -123,7 +123,7 @@ def go(rargs):
 
     fwrap = process(c)
 
-    print json.dumps(fwrap)
+    print(json.dumps(fwrap))
 
 
 

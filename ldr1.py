@@ -177,7 +177,7 @@ def groomQuads(r34, r50, r64):
         adjQuad(r34)
         expandParent(r34, r50)
 
-    # Proceed to 364:
+    # Proceed to r64:
     elif adjQuad(r34):
         result = 34
 
@@ -239,7 +239,6 @@ def readData(reader):
     prow = [ x.strip() for x in next(reader) ]
     
     data = {}
-    #  DATA
 #                                       max  min       34knt radii nmiles             50knt                     64knt
 #date      time  X  s    lat     lon    knt  pres    NE    SE    SW    NW      NE
 #20050823, 1800,  , TD, 23.1N,  75.1W,  30, 1008,    0,    0,    0,    0,      0,    0,    0,    0,      0,    0,    0,    0,
@@ -248,21 +247,21 @@ def readData(reader):
     ts = prow[0] + prow[1]
     data['ts'] = datetime.datetime.strptime(ts, "%Y%m%d%H%M")
 
-    # Codes are [ "L", "R", "I", "P", "W", "C", "S", "G", "T" ]
-    # C – Closest approach to a coast, not followed by a landfall
-    # G – Genesis
-    # I – An intensity peak in terms of both pressure and wind
-    # L – Landfall (center of system crossing a coastline)
-    # P – Minimum in central pressure
-    # R – Provides additional detail on the intensity of the cyclone when rapid changes are underway
-    # S – Change of status of the system
-    # T – Provides additional detail on the track (position) of the cyclone
-    # W – Maximum sustained wind speed
+    # Codes for X (idx 2 above) are [ "L", "R", "I", "P", "W", "C", "S", "G", "T" ]
+    # C - Closest approach to a coast, not followed by a landfall
+    # G - Genesis
+    # I - An intensity peak in terms of both pressure and wind
+    # L - Landfall (center of system crossing a coastline)
+    # P - Minimum in central pressure
+    # R - Provides additional detail on the intensity of the cyclone when rapid changes are underway
+    # S - Change of status of the system
+    # T - Provides additional detail on the track (position) of the cyclone
+    # W - Maximum sustained wind speed
     #
     # Invent the D code for regular data:
-    data['code'] = prow[2] if prow[2] is not '' else 'D'
+    data['code'] = prow[2] if prow[2] != '' else 'D'
 
-    data['status'] = prow[3];
+    data['status'] = prow[3];  # TD for tropical depression, HU for hurricane, etc.
 
     # lat long are X.XN or XX.XN    1 decimal place is good to 11.1 km, or about 6.8 miles.  Fine!
     lat = float(prow[4][:-1])
@@ -326,7 +325,22 @@ def bearing(startlat, startlon, endlat, endlon ):
     return compass_bearing
 
 
+def createIndexes(coll):
+    print("creating 2dsphere index on center (type Point)...")
+    coll.create_index([("center","2dsphere")])
 
+    print("creating 2dsphere index on windRings (type MuliPolygon...")
+    try:
+        coll.create_index([("windRings","2dsphere")])
+    except pymongo.errors.OperationFailure as e:
+        #(error, code=None, details=None, max_wire_version=None)¶
+        #  99% of the time the exception is because the multiring setup with
+        #  holes causes a data error:
+        if e.code == 16755:
+            print("ERROR: MultiPolygon geom is bad:")
+            #print("CODE",e.code);
+            #print("DETAIL",e.details);
+            
 def go(rargs):
     client = MongoClient(host=rargs.host)
 
@@ -346,6 +360,9 @@ def go(rargs):
         if rargs.drop == True:
             coll.drop()
 
+        if rargs.fast != True:
+            createIndexes(coll)
+
         while True:
             info = readHeader(reader)
             if info is None:
@@ -354,6 +371,8 @@ def go(rargs):
             maxn = info['count']
 
             items = []
+            # Load ALL observations for a particular storm.  It is OK;
+            # 100 seems to be max and most are 20-40:
             for n in range(0, maxn):
                 items.append(readData(reader))
 
@@ -387,28 +406,38 @@ def go(rargs):
                 items[n]['basin'] = info['basin']
                 items[n]['nth'] = info['nth']
                 items[n]['name'] = info['name']
+                items[n]['idx'] = n
                 
-                coll.insert(items[n])
+                try:
+                    coll.insert_one(items[n])
+                except pymongo.errors.OperationFailure as e:
+                    #  99% of the time the exception is because the multiring setup with
+                    #  holes causes a data error:
+                    if e.code == 16755:
+                        print("ERROR: %s %d: idx %d: MultiPolygon geom is bad:" % (info['name'],info['nth'],n))
 
+                    if rargs.skip != True:
+                        break   # leave loading loop
 
             tot += 1
             if 0 == tot % 100:
-                print tot
+                print(tot)
 
 
-        print "total events loaded:", tot
+        print("total events loaded:", tot)
 
-        print "creating 2dsphere index on center..."
-        coll.create_index([("center","2dsphere")])
+        if rargs.fast == True:
+            createIndexes(coll)
 
-        print "creating 2dsphere index on windRings..."
-        coll.create_index([("windRings","2dsphere")])
 
 
 
 def main(args):
     parser = argparse.ArgumentParser(description=
-   """A quick util to load HURDAT2 data into MongoDB
+   """A quick util to load HURDAT2 data into MongoDB.  Each observation is its own document, i.e.
+a hurricane with 30 wind/position measurements will have 30 docs in the collection.  We do it this
+way instead of creating an array of 30 measurements in a single doc because it simplifies some of
+the geom lookups and dumping for viz, but the case could certainly be made to use an array.
    """,
          formatter_class=argparse.ArgumentDefaultsHelpFormatter
    )
@@ -434,6 +463,16 @@ def main(args):
                    action='store_true',
                    help='drop target collection before loading')
 
+    parser.add_argument('--fast', 
+                   action='store_true',
+                   help='create indexes AFTER loading data.  Carries risk of one document multipolygon data being broken and thus preventing the creation of the index for all loaded events.  Not really much faster than checking for bad geom upon insert')    
+
+    parser.add_argument('--skip', 
+                   action='store_true',
+                   help='If insert fails for an observation (almost always because of weird geom errors), keep going.')    
+    
+
+    
     rargs = parser.parse_args()
 
     go(rargs)
